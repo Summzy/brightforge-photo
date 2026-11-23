@@ -1,0 +1,18 @@
+/* BrightForge Photo Phase 1 brand overlay: visual styling only. The source app remains upstream. */
+:root { color-scheme: dark; }
+html, body { background: #07172a !important; }
+#photocraft_loading {
+  background: radial-gradient(ellipse at 29% 48%, rgba(0,167,221,.17), transparent 57%),
+              radial-gradient(ellipse at 76% 48%, rgba(221,38,223,.13), transparent 60%),
+              #07172a;
+  color: #dce9fb !important; gap: 9px;
+}
+#bfp-brand { display:flex; flex-direction:column; align-items:center; gap:4px; margin-bottom:14px; }
+#bfp-brand img { width: clamp(100px, 22vw, 180px); height: auto; border-radius: 50%; filter: drop-shadow(0 2px 20px rgba(12,194,228,.18)); }
+#bfp-brand h1 { font: 700 clamp(24px, 3.6vw, 41px)/1.15 system-ui, -apple-system, Segoe UI, sans-serif; letter-spacing:-.045em; color:#f5faff; margin:8px 0 2px; }
+#bfp-brand h1 span { color:#07d9e9; }
+#bfp-brand small { letter-spacing:.32em; font-size:10px; font-weight:600; color:#b3c9e5; }
+#photocraft_loading > p { color:#c2d1e6; }
+#photocraft_stalled { max-width:480px !important; color:#9fb3cf !important; }
+#photocraft_stopped { background:rgba(7,23,42,.96) !important; }
+#photocraft_stopped a, #photocraft_loading a { color:#2ad8ed !important; }
