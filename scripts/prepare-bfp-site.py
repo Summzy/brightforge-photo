@@ -71,6 +71,22 @@ def build(release_archive: Path, site: Path) -> None:
         dirs_exist_ok=True
     )
 
+    # Bundle the upstream eframe JavaScript snippet into the main loader.
+    import re
+    glue = site / 'app' / 'photocraft-web.js'
+    code = glue.read_text(encoding='utf-8')
+    parts = re.findall(r"(?m)^import .*?from ['\"]\./snippets/([^'\"]+)['\"];?\s*$", code)
+    if len(parts) != 3 or len(set(parts)) != 1:
+        raise RuntimeError(f'Unexpected PhotoCraft snippet imports: {parts}')
+    snippet = (site / 'app' / 'snippets' / parts[0]).read_text(encoding='utf-8')
+    declarations = snippet.replace('export function ', 'function ')
+    symbols = re.findall(r'(?m)^function (\w+)\(', declarations)
+    code, count = re.subn(r"(?m)^import .*?from ['\"]\./snippets/[^'\"]+['\"];?\s*\n", '', code)
+    if count != 3 or len(symbols) != 3:
+        raise RuntimeError('PhotoCraft snippet shape changed')
+    code = declarations + "\nconst import1 = { " + ", ".join(symbols) + " };\nconst import2 = import1;\n" + code
+    glue.write_text(code, encoding='utf-8')
+
     shutil.copytree(PROJECT / 'branding', site / 'branding', dirs_exist_ok=True)
     (site / 'manifest.webmanifest').write_text(json.dumps({
         'id': './', 'name': 'BrightForge Photo', 'short_name': 'BFP',
