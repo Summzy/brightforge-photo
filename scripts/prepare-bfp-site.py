@@ -61,6 +61,16 @@ def build(release_archive: Path, site: Path) -> None:
     html = html.replace('<strong>PhotoCraft stopped.</strong>', '<strong>BrightForge Photo stopped.</strong>')
     index.write_text(html, encoding='utf-8')
 
+    # Fix upstream PhotoCraft v0.23.1 missing module path.
+    snippets = site / 'snippets'
+    if not snippets.is_dir():
+        raise RuntimeError('Missing PhotoCraft snippets')
+    shutil.copytree(
+        snippets,
+        site / 'app' / 'snippets',
+        dirs_exist_ok=True
+    )
+
     shutil.copytree(PROJECT / 'branding', site / 'branding', dirs_exist_ok=True)
     (site / 'manifest.webmanifest').write_text(json.dumps({
         'id': './', 'name': 'BrightForge Photo', 'short_name': 'BFP',
