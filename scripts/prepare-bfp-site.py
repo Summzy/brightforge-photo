@@ -59,6 +59,8 @@ def build(release_archive: Path, site: Path) -> None:
     html = html.replace('If PhotoCraft doesn\'t start', 'If BrightForge Photo doesn\'t start')
     html = html.replace('PhotoCraft needs JavaScript', 'BrightForge Photo needs JavaScript')
     html = html.replace('<strong>PhotoCraft stopped.</strong>', '<strong>BrightForge Photo stopped.</strong>')
+    # Keep the existing PhotoCraft WASM engine, but allow native browser Save As.
+    html = html.replace('</head>', '  <script defer src="./branding/bfp-save-as.js"></script>\n</head>', 1)
     index.write_text(html, encoding='utf-8')
 
     # Fix upstream PhotoCraft v0.23.1 missing module path.
