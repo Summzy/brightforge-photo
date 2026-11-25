@@ -90,14 +90,6 @@ def build(release_archive: Path, site: Path) -> None:
     glue.write_text(code, encoding='utf-8')
 
     shutil.copytree(PROJECT / 'branding', site / 'branding', dirs_exist_ok=True)
-
-    index_html = site / 'index.html'
-    html = index_html.read_text(encoding='utf-8')
-    if './branding/bfp-app-branding.css' not in html:
-        html = html.replace('</head>', '  <link rel="stylesheet" href="./branding/bfp-app-branding.css">\n</head>')
-    if './branding/bfp-app-branding.js' not in html:
-        html = html.replace('</body>', '  <script src="./branding/bfp-app-branding.js"></script>\n</body>')
-    index_html.write_text(html, encoding='utf-8')
     (site / 'manifest.webmanifest').write_text(json.dumps({
         'id': './', 'name': 'BrightForge Photo', 'short_name': 'BFP',
         'description': 'Professional Photo Editing, Reimagined',
