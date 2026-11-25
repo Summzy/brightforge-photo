@@ -1,0 +1,28 @@
+/* Runtime branding overlay for the loaded BrightForge Photo editor UI. */
+:root {
+  --bfp-cyan: #18d8ef;
+  --bfp-pink: #ee4bff;
+  --bfp-text: #f5faff;
+  --bfp-subtle: #b6c9dd;
+}
+
+[data-bfp-brand-title] {
+  color: var(--bfp-text) !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+}
+
+[data-bfp-brand-wordmark] {
+  color: var(--bfp-text) !important;
+  font-weight: 700 !important;
+}
+
+[data-bfp-support-link] {
+  color: var(--bfp-cyan) !important;
+}
+
+a[title='BrightForge Photo Website'],
+a[title='BrightForge Photo on GitHub'],
+a[title='BrightForge Photo Support'] {
+  color: inherit;
+}
