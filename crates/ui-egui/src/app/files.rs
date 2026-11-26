@@ -595,6 +595,11 @@ impl PhotocraftApp {
         let (bytes, warnings) = export(&st.doc, &path, settings)?;
         let write = self.services.write.as_mut().ok_or("no writer configured")?;
         write(&path, &bytes)?;
+        if self.services.write_unconfirmed
+            && let Some(on_pending) = self.services.browser_write_pending.as_mut()
+        {
+            on_pending(doc, written, &path, copy);
+        }
         let revision = saved_revision_after_write(!self.services.write_unconfirmed, written, previous);
         self.saved(doc, revision, &path, &warnings, copy);
         Ok(Some((path, warnings)))
@@ -648,6 +653,38 @@ impl PhotocraftApp {
     /// state (unless a copy), the status, script events and the warnings.
     pub(crate) fn saved(&mut self, doc: DocId, revision: u64, path: &str, warnings: &[String], copy: bool) {
         self.saved_inner(doc, revision, path, warnings, copy, SaveKind::User);
+    }
+
+    /// Mark only the exact revision successfully written by the browser.
+    /// Called by the web shell *after* FileSystemWritableFileStream.close()
+    /// resolves; a cancelled picker or unconfirmed download never calls it.
+    /// If edits occurred after the write started, those edits stay dirty.
+    pub fn confirm_browser_write(&mut self, doc: DocId, written: u64, path: &str) -> bool {
+        let Some(current) = self.session.documents().iter().find(|st| st.doc.id == doc) else {
+            return false;
+        };
+        if current.path.as_deref() != Some(path) || current.revision < written {
+            return false;
+        }
+        // A delayed completion from an older save must not roll back a newer one.
+        if current.saved_revision != u64::MAX && current.saved_revision > written {
+            return false;
+        }
+        let mut confirmed = false;
+        let _ = self.with_document(doc, |app| {
+            let st = app.session.active_mut().ok_or("Document was closed")?;
+            if st.path.as_deref() == Some(path) && st.revision >= written {
+                st.saved_revision = written;
+                confirmed = true;
+            }
+            Ok(())
+        });
+        if confirmed {
+            self.ui.status = format!("Saved {path}");
+            self.ui.status_error = false;
+            self.sync_views();
+        }
+        confirmed
     }
 
     /// [`Self::saved`] for automation saves: no user-configured hooks (docs/control-protocol.md).

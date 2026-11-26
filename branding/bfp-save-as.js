@@ -64,6 +64,16 @@
     db.close();
   }
 
+  // The Rust editor only clears a document's unsaved marker after this event
+  // confirms that the native File System Access writer actually closed.
+  // A fallback download, failed write, or cancelled picker is NOT confirmation.
+  function saveReceipt(item, saved) {
+    if (!item.saveId) return; // Old published engines do not supply save ids.
+    window.dispatchEvent(new CustomEvent('bfp-save-result', {
+      detail: {id:item.saveId, saved:!!saved}
+    }));
+  }
+
   function safeName(a) {
     const suggested = (a.getAttribute('download') || '').split(/[\\/]/).pop() || 'Untitled.pcraft';
     return suggested.replace(/[\u0000-\u001f]/g, '').slice(0, 180) || 'Untitled.pcraft';
@@ -132,7 +142,12 @@
       const download=button('Download instead');
       const cancel=button('Cancel');
       const controls=[choose,download,cancel];
-      const done=() => {document.removeEventListener('keydown',esc);shade.remove();resolve();};
+       const done=(saved=false) => {
+        document.removeEventListener('keydown',esc);
+        shade.remove();
+        saveReceipt(item,saved);
+        resolve();
+       };
       const esc=(e)=>{if(e.key==='Escape'&&!controls.some(b=>b.disabled)){e.preventDefault();done();}};
       const working=(state)=>{for(const b of controls){b.disabled=state;b.style.opacity=state?'0.5':'1';}};
       choose.addEventListener('click',async()=>{
@@ -149,7 +164,7 @@
           const handle=await window.showSaveFilePicker(options);
           await write(handle,blob);
           await remember(item.name,handle);
-          done();
+          done(true);
         } catch(e){ if(e?.name!=='AbortError') error.textContent=`Could not save: ${e?.message||String(e)}`; }
         finally {working(false);}
       });
@@ -158,7 +173,7 @@
         controls.unshift(update);
         update.addEventListener('click',async()=>{
           error.textContent='';working(true);
-          try {await write(previous,blob);done();}
+          try {await write(previous,blob);done(true);}
           catch(e){error.textContent=`Could not update the previous file: ${e?.message||String(e)}. Use Save As to choose a file.`;}
           finally {working(false);}
         });
@@ -183,7 +198,10 @@
       while(pending.length){
         const item=pending.shift();
         try {await promptFor(item,await item.blob);}
-        catch(e) {console.error('BrightForge Photo: save failed',e);}
+        catch(e) {
+          console.error('BrightForge Photo: save failed',e);
+          saveReceipt(item,false);
+        }
       }
     } finally {presenting=false;}
   }
@@ -191,7 +209,7 @@
     if(this.hasAttribute('download') && this.href?.startsWith('blob:')) {
       // Blob URLs are revoked by the WASM engine shortly after this call.
       const blob=fetch(this.href).then(r=>{if(!r.ok) throw new Error(`Save data unavailable (${r.status})`);return r.blob();});
-      pending.push({name:safeName(this),blob});
+       pending.push({name:safeName(this),blob,saveId:this.getAttribute('data-bfp-save-id')});
       void drain();
       return;
     }

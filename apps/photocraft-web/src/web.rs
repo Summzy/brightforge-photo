@@ -1,13 +1,13 @@
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
 use photocraft_engine::actions_cmds::ActionsExt;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use photocraft_doc::Document;
+use photocraft_doc::{DocId, Document};
 use photocraft_ui_egui::i18n;
 use photocraft_ui_egui::served_fonts;
 use photocraft_ui_egui::theme::AppTheme;
@@ -48,6 +48,37 @@ struct ServedFonts {
 }
 
 type Served = Arc<Mutex<ServedFonts>>;
+
+// Save events are correlated by an opaque id, not by filename. Two open tabs
+// can have identical filenames; the same document can change after saving.
+struct BrowserSave {
+    id: String,
+    path: String,
+    doc: Option<DocId>,
+    revision: u64,
+    copy: bool,
+}
+type BrowserSaves = Rc<RefCell<Vec<BrowserSave>>>;
+type BrowserSaveResults = Rc<RefCell<Vec<(String, bool)>>>;
+
+fn listen_bfp_save_results(results: BrowserSaveResults, ctx: egui::Context) {
+    use wasm_bindgen::closure::Closure;
+    let Some(window) = web_sys::window() else { return };
+    let callback = Closure::<dyn FnMut(web_sys::CustomEvent)>::new(move |event: web_sys::CustomEvent| {
+        let detail = event.detail();
+        let id = js_sys::Reflect::get(&detail, &wasm_bindgen::JsValue::from_str("id"))
+            .ok().and_then(|value| value.as_string());
+        let saved = js_sys::Reflect::get(&detail, &wasm_bindgen::JsValue::from_str("saved"))
+            .ok().and_then(|value| value.as_bool()).unwrap_or(false);
+        if let Some(id) = id {
+            results.borrow_mut().push((id, saved));
+            ctx.request_repaint();
+        }
+    });
+    if window.add_event_listener_with_callback("bfp-save-result", callback.as_ref().unchecked_ref()).is_ok() {
+        callback.forget();
+    }
+}
 
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
@@ -104,7 +135,12 @@ pub fn start() {
                     let actions_revision = session.actions().list.revision();
                     preset_warnings.extend(warnings);
                     let drag = listen_drag(&pen_target);
-                    let mut services = services(inbox.clone(), place_inbox.clone(), drag_pos_service(pen_target.clone(), drag));
+                    let browser_saves: BrowserSaves = Rc::default();
+                    let browser_save_results: BrowserSaveResults = Rc::default();
+                    listen_bfp_save_results(browser_save_results.clone(), cc.egui_ctx.clone());
+                    let mut services = services(
+                        inbox.clone(), place_inbox.clone(), drag_pos_service(pen_target.clone(), drag), browser_saves.clone(),
+                    );
                     let mut initial = Some(load_initial_preferences(&presets, database.is_some() && !session.actions().list.actions().is_empty()));
                     services.load_prefs = Some(Box::new(move || initial.take().unwrap_or_else(stored_preferences)));
                     let mut app = PhotocraftApp::with_context(cc.egui_ctx.clone(), session, services);
@@ -131,6 +167,8 @@ pub fn start() {
                         app,
                         inbox,
                         place_inbox,
+                        browser_saves,
+                        browser_save_results,
                         unsaved,
                         served,
                         database,
@@ -368,6 +406,8 @@ struct WebShell {
     inbox: Inbox,
     /// Dropped files to place on the active document's canvas.
     place_inbox: PlaceInbox,
+    browser_saves: BrowserSaves,
+    browser_save_results: BrowserSaveResults,
     /// Read by the `beforeunload` listener ([`guard_unload`]).
     unsaved: Arc<AtomicBool>,
     served: Served,
@@ -380,6 +420,23 @@ struct WebShell {
 }
 
 impl WebShell {
+    fn apply_browser_save_results(&mut self) {
+        let results = std::mem::take(&mut *self.browser_save_results.borrow_mut());
+        for (id, success) in results {
+            let save = {
+                let mut saves = self.browser_saves.borrow_mut();
+                saves.iter().position(|s| s.id == id).map(|index| saves.remove(index))
+            };
+            if let Some(save) = save
+                && success
+                && !save.copy
+                && let Some(doc) = save.doc
+            {
+                self.app.confirm_browser_write(doc, save.revision, &save.path);
+            }
+        }
+    }
+
     fn save_presets(&mut self, ctx: &egui::Context) {
         let session = &self.app.session;
         if self.actions_revision != session.actions().list.revision() {
@@ -460,6 +517,7 @@ impl eframe::App for WebShell {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.apply_browser_save_results();
         let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
         if !dropped.is_empty() {
             let names: Vec<String> =
@@ -551,7 +609,12 @@ impl eframe::App for WebShell {
     }
 }
 
-fn services(inbox: Inbox, place_inbox: PlaceInbox, cursor_pos: photocraft_ui_egui::CursorPosFn) -> Services {
+fn services(
+    inbox: Inbox, place_inbox: PlaceInbox, cursor_pos: photocraft_ui_egui::CursorPosFn, browser_saves: BrowserSaves,
+) -> Services {
+    let writer_saves = browser_saves.clone();
+    let pending_saves = browser_saves;
+    let next_id = Rc::new(Cell::new(0u64));
     Services {
         import: Some(Box::new(|name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions| {
             photocraft_io::import_with_options(name, bytes, opts).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
@@ -595,9 +658,28 @@ fn services(inbox: Inbox, place_inbox: PlaceInbox, cursor_pos: photocraft_ui_egu
                 reply.send(Some(FileDialogAnswer::SaveTo(name)));
             }
         })),
-        write: Some(Box::new(|path: &str, bytes: &[u8]| download(path, bytes))),
+        write: Some(Box::new(move |path: &str, bytes: &[u8]| {
+            let id = next_id.get().wrapping_add(1);
+            next_id.set(id);
+            let id = id.to_string();
+            writer_saves.borrow_mut().push(BrowserSave {
+                id: id.clone(), path: path.to_string(), doc: None, revision: 0, copy: false,
+            });
+            if let Err(error) = download(path, bytes, &id) {
+                writer_saves.borrow_mut().retain(|s| s.id != id);
+                return Err(error);
+            }
+            Ok(())
+        })),
         // A download may be cancelled and never reports back: it doesn't save the document.
         write_unconfirmed: true,
+        browser_write_pending: Some(Box::new(move |doc, revision, path, copy| {
+            if let Some(save) = pending_saves.borrow_mut().iter_mut().rev().find(|s| s.doc.is_none() && s.path == path) {
+                save.doc = Some(doc);
+                save.revision = revision;
+                save.copy = copy;
+            }
+        })),
         inbox: Some(inbox),
         place_inbox: Some(place_inbox),
         cursor_pos: Some(cursor_pos),
@@ -653,7 +735,7 @@ fn save_local_preferences(text: &str) -> Result<(), String> {
 }
 
 /// Trigger a browser download of `bytes` named after the last component of `path`.
-fn download(path: &str, bytes: &[u8]) -> Result<(), String> {
+fn download(path: &str, bytes: &[u8], save_id: &str) -> Result<(), String> {
     let js = |e: wasm_bindgen::JsValue| format!("{e:?}");
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "photocraft".into());
     let window = web_sys::window().ok_or("no window")?;
@@ -666,6 +748,7 @@ fn download(path: &str, bytes: &[u8]) -> Result<(), String> {
     let a: web_sys::HtmlAnchorElement = document.create_element("a").map_err(js)?.dyn_into().map_err(|_| "not an anchor")?;
     a.set_href(&url);
     a.set_download(&name);
+    a.set_attribute("data-bfp-save-id", save_id).map_err(js)?;
     a.style().set_property("display", "none").map_err(js)?;
     let body = document.body().ok_or("no body")?;
     body.append_child(&a).map_err(js)?;

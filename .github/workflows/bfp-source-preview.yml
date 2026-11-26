@@ -1,0 +1,67 @@
+name: BrightForge Photo - Source save-confirmation preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_preview:
+        description: 'Deploy to separate bfp-preview Worker (never overwrite live bfp)'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out BrightForge Photo source
+        uses: actions/checkout@v4
+      - name: Install Rust 1.100 with browser target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.100.0'
+          targets: wasm32-unknown-unknown
+      - name: Install Trunk for WebAssembly builds
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pkg-config libssl-dev clang libgtk-3-dev libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - name: Validate browser save bridge and packaging
+        run: |
+          node --check branding/bfp-save-as.js
+          python3 -m py_compile scripts/prepare-bfp-site.py install-bfp-save-confirm.py
+          git diff --check
+      - name: Build custom PhotoCraft WebAssembly engine from this fork
+        env:
+          PHOTOCRAFT_WEB_WASM_OPT_CONVERGE: '0'
+          CARGO_BUILD_JOBS: '2'
+        run: bash packaging/web/package.sh
+      - name: Assemble separately branded site from source build
+        run: |
+          python3 scripts/prepare-bfp-site.py dist/photocraft-web-0.23.1.zip site
+          test -s site/index.html
+          test -s site/app/parts.txt
+          test -s site/branding/bfp-save-as.js
+      - name: Store source build for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: bfp-source-save-confirmation-preview
+          path: site/
+          include-hidden-files: true
+          retention-days: 7
+      - name: Deploy only to the preview Worker when requested
+        if: ${{ inputs.deploy_preview == true }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          npx --yes wrangler@4 deploy --config wrangler.jsonc --name bfp-preview
+          echo 'Preview only: https://bfp-preview.brightforgestudio.workers.dev/'

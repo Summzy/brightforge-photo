@@ -1,6 +1,6 @@
 #[cfg(target_arch = "wasm32")]
 use super::FileDialogFn;
-use super::{Document, OsEvent, Value, dds_options_ui, jobs_ui, jpeg_options_ui, monitor_status, targa_options_ui, tiff_options_ui};
+use super::{DocId, Document, OsEvent, Value, dds_options_ui, jobs_ui, jpeg_options_ui, monitor_status, targa_options_ui, tiff_options_ui};
 
 /// The error a save gets while another save waits on its format prompt.
 pub(crate) const SAVE_OPTIONS_OPEN: &str = "Answer the TIFF, Targa, DDS or JPEG Options before starting another save";
@@ -285,6 +285,11 @@ pub type ExportFn = Box<dyn Fn(&Document, &str, &ExportSettings) -> Result<(Vec<
 
 pub type WriteFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 
+/// Called immediately after a browser has staged its file bytes for a real
+/// user-mediated save. The asynchronous browser receipt is handled by the web
+/// shell; this hook records the document and exact revision being written.
+pub type BrowserWritePendingFn = Box<dyn FnMut(DocId, u64, &str, bool)>;
+
 /// What a file on disk looked like when a document last read or wrote it: File › Save asks
 /// before replacing a file another app changed since (#6596).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -549,6 +554,9 @@ pub struct Services {
     /// cancel and which reports nothing back), so a save through it names the document but
     /// leaves its changes unsaved and the leave-page guard armed (#4962).
     pub write_unconfirmed: bool,
+    /// Optional web-only correlation hook. The browser must report success
+    /// separately; merely staging a download must never clear dirty state.
+    pub browser_write_pending: Option<BrowserWritePendingFn>,
     /// Encode and write in one step on a worker thread, so a large save doesn't freeze the
     /// window (#2017). With background jobs on, saves use it instead of `export` and `write`.
     pub save_file: Option<SaveFileFn>,
